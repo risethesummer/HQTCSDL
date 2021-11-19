@@ -18,19 +18,19 @@ BEGIN TRANSACTION
 				FROM CHI_NHANH
 				WHERE MA_CN IN (SELECT cn.MA_CN FROM @chi_nhanh cn) 
 					AND MA_HD IS NOT NULL)
-	BEGIN	
-		ROLLBACK TRANSACTION;
+	BEGIN
+		RETURN;
 	END;
 
 	--Thêm vào bảng hợp đồng
-	INSERT INTO HOP_DONG (MA_HD, MA_DT, MA_THUE_DT, NGUOI_DAI_DIEN_HD)
-	VALUES (@ma_hd, @ma_dt, @ma_thue, @nguoi_dai_dien);
-
+	INSERT INTO HOP_DONG (MA_HD, MA_DT, MA_THUE_DT, NGUOI_DAI_DIEN_HD, SO_CN)
+	SELECT @ma_hd, @ma_dt, @ma_thue, @nguoi_dai_dien, COUNT(DISTINCT MA_CN) FROM @chi_nhanh;
 
 	--Update khóa ngoại các chi nhánh vào hợp đồng
 	UPDATE CHI_NHANH
 	SET MA_HD = @ma_hd
 	WHERE MA_CN IN (SELECT cn.MA_CN FROM @chi_nhanh cn);
+
 COMMIT TRANSACTION
 GO
 
@@ -41,14 +41,15 @@ BEGIN TRANSACTION
 	--Nếu đơn hàng đã có tài xế khác tiếp nhận
 	IF EXISTS (SELECT * 
 				FROM DON_HANG 
-				WHERE MA_DH = @ma_dh AND MA_TX IS NOT NULL)
+				WHERE MA_DH = @ma_dh AND MA_TX IS NOT NULL AND TINH_TRANG_DH = N'Đang xử lý')
 	BEGIN	
-		ROLLBACK TRANSACTION;
+		RETURN;
 	END
 
 	UPDATE DON_HANG
-	SET MA_TX = @ma_tx
+	SET MA_TX = @ma_tx, TINH_TRANG_DH = N'Đang giao'
 	WHERE MA_DH = @ma_dh;
+
 COMMIT TRANSACTION
 GO
 
@@ -110,15 +111,15 @@ CREATE TYPE SAN_PHAM_SO_LUONG AS TABLE
 GO
 
 --Procedure tạo đơn hàng
-CREATE PROCEDURE tao_don_dat_hang @ma_dh CHAR(8), @ma_dt CHAR(8), @ma_kh CHAR(8), @ma_tx CHAR(8), @hinh_thuc_tt NVARCHAR(30),
-									@dia_chi_gh NVARCHAR(30), @tinh_trang_dh NVARCHAR(15), @phi_vc INT, @san_pham_so_luong SAN_PHAM_SO_LUONG READONLY
+CREATE PROCEDURE tao_don_dat_hang @ma_dh CHAR(8), @ma_cn CHAR(8), @ma_kh CHAR(8), @ma_tx CHAR(8), @hinh_thuc_tt NVARCHAR(30),
+									@dia_chi_gh NVARCHAR(30),  @phi_vc INT, @san_pham_so_luong SAN_PHAM_SO_LUONG READONLY
 AS
 BEGIN TRANSACTION
 
 	BEGIN TRY
 		--Tạo đơn hàng
-		INSERT INTO DON_HANG(MA_DH, MA_DT, MA_TX, MA_KH, HINH_THUC_TT, DIA_CHI_GH, TINH_TRANG_DH, PHI_VC)
-		VALUES (@ma_dh, @ma_dt, @ma_tx, @ma_kh, @hinh_thuc_tt, @dia_chi_gh, @tinh_trang_dh, @phi_vc);
+		INSERT INTO DON_HANG(MA_DH, MA_CN, MA_TX, MA_KH, HINH_THUC_TT, DIA_CHI_GH, PHI_VC)
+		VALUES (@ma_dh, @ma_cn, @ma_tx, @ma_kh, @hinh_thuc_tt, @dia_chi_gh, @phi_vc);
 
 		--Tạo chi tiết đơn hàng
 		INSERT INTO DON_HANG_SP(MA_DH, MA_SP, SO_LUONG_SP_DH, GIA_SP_DH)
@@ -137,3 +138,19 @@ BEGIN TRANSACTION
 		ROLLBACK TRANSACTION;
 	END CATCH
 COMMIT TRANSACTION
+GO
+
+--Procedure cho khách hàng hủy đơn đặt hàng
+CREATE PROC huy_don_dat_hang @ma_dh CHAR(8)
+AS
+BEGIN TRANSACTION
+	--Chỉ có thể hủy khi đơn hàng chưa được tiếp nhận bởi tài xế
+	IF EXISTS (SELECT * 
+				FROM DON_HANG
+				WHERE MA_DH = @ma_dh AND TINH_TRANG_DH = N'Đang xử lý')
+		BEGIN
+			UPDATE DON_HANG
+			SET TINH_TRANG_DH = N'Đã hủy'
+			WHERE MA_DH = @ma_dh;
+		END
+COMMIT
