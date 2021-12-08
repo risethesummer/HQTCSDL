@@ -111,28 +111,44 @@ CREATE TYPE SAN_PHAM_SO_LUONG AS TABLE
 GO
 
 --Procedure tạo đơn hàng
-CREATE PROCEDURE tao_don_dat_hang @ma_dh CHAR(8), @ma_cn CHAR(8), @ma_kh CHAR(8), @ma_tx CHAR(8), @hinh_thuc_tt NVARCHAR(30),
+CREATE PROCEDURE tao_don_dat_hang @ma_dh CHAR(8), @ma_cn CHAR(8), @ma_kh CHAR(8), @hinh_thuc_tt NVARCHAR(30),
 									@dia_chi_gh NVARCHAR(30),  @phi_vc INT, @san_pham_so_luong SAN_PHAM_SO_LUONG READONLY
 AS
 BEGIN TRANSACTION
 
 	BEGIN TRY
+		
+		DECLARE @phi_sp INT;
+		--Tính tổng giá sản phẩm của đơn hàng
+		SET @phi_sp = (SELECT SUM(spsl.SO_LUONG * sp.GIA_SP)
+						FROM SAN_PHAM sp JOIN @san_pham_so_luong spsl
+								ON sp.MA_SP = spsl.MA_SP)
+
 		--Tạo đơn hàng
-		INSERT INTO DON_HANG(MA_DH, MA_CN, MA_TX, MA_KH, HINH_THUC_TT, DIA_CHI_GH, PHI_VC)
-		VALUES (@ma_dh, @ma_cn, @ma_tx, @ma_kh, @hinh_thuc_tt, @dia_chi_gh, @phi_vc);
+		INSERT INTO DON_HANG(MA_DH, MA_CN, MA_TX, MA_KH, HINH_THUC_TT, DIA_CHI_GH, PHI_SP, PHI_VC)
+		VALUES (@ma_dh, @ma_cn, NULL, @ma_kh, @hinh_thuc_tt, @dia_chi_gh, @phi_sp, @phi_vc);
+
+		--Kiểm tra chi nhánh đủ số lượng sản phẩm hay không
+		IF EXISTS (SELECT * 
+					FROM CHI_NHANH_SP cnsp JOIN @san_pham_so_luong spsl ON cnsp.MA_SP = spsl.MA_SP
+					WHERE cnsp.MA_CN = @ma_cn AND (cnsp.SO_LUONG_CNSP - spsl.SO_LUONG < 0))
+			BEGIN
+				ROLLBACK TRANSACTION;
+			END
 
 		--Tạo chi tiết đơn hàng
 		INSERT INTO DON_HANG_SP(MA_DH, MA_SP, SO_LUONG_SP_DH, GIA_SP_DH)
 		SELECT @ma_dh, spsl.MA_SP, spsl.SO_LUONG, SP.GIA_SP
 		FROM @san_pham_so_luong spsl JOIN SAN_PHAM SP
 			ON SP.MA_SP = spsl.MA_SP;
-		
-		--Update phí sản phẩm của đơn hàng
-		UPDATE DON_HANG
-		SET PHI_SP = (SELECT SUM(SO_LUONG_SP_DH * GIA_SP_DH)
-						FROM DON_HANG_SP
-						WHERE MA_DH = @ma_dh)
-		WHERE MA_DH = @ma_dh;
+
+
+		--Trừ sản phẩm trong chi nhánh sản phẩm
+		UPDATE CHI_NHANH_SP
+		SET SO_LUONG_CNSP = SO_LUONG_CNSP - (SELECT TOP 1 spsl.SO_LUONG 
+												FROM @san_pham_so_luong spsl 
+												WHERE spsl.MA_SP = MA_SP)
+		WHERE MA_CN = @ma_cn AND MA_SP IN (SELECT MA_SP FROM @san_pham_so_luong)
 	END TRY
 	BEGIN CATCH
 		ROLLBACK TRANSACTION;
@@ -144,6 +160,7 @@ GO
 CREATE PROC huy_don_dat_hang @ma_dh CHAR(8)
 AS
 BEGIN TRANSACTION
+	BEGIN TRY
 	--Chỉ có thể hủy khi đơn hàng chưa được tiếp nhận bởi tài xế
 	IF EXISTS (SELECT * 
 				FROM DON_HANG
@@ -152,5 +169,50 @@ BEGIN TRANSACTION
 			UPDATE DON_HANG
 			SET TINH_TRANG_DH = N'Đã hủy'
 			WHERE MA_DH = @ma_dh;
+
+			--Cộng lại sản phẩm trong chi nhánh sản phẩm
+			UPDATE CHI_NHANH_SP
+			SET SO_LUONG_CNSP = SO_LUONG_CNSP + (SELECT TOP 1 dhsp.SO_LUONG_SP_DH
+												FROM DON_HANG_SP dhsp
+												WHERE dhsp.MA_SP = MA_SP AND dhsp.MA_DH = MA_DH)
+			WHERE MA_CN = (SELECT TOP 1 dh.MA_CN 
+							FROM DON_HANG dh
+							WHERE dh.MA_DH = @ma_dh)
+				AND MA_SP IN (SELECT dhsp.MA_SP 
+								FROM DON_HANG_SP dhsp
+								WHERE dhsp.MA_DH = @ma_dh);
 		END
+	END TRY
+	BEGIN CATCH
+		ROLLBACK TRANSACTION;
+	END CATCH
 COMMIT
+GO
+
+--Store procedure để đối tác thống kê đơn hàng
+CREATE PROC doi_tac_thong_ke_hd @ma_dt CHAR(8)
+AS
+BEGIN
+	SELECT COUNT(dh.MA_DH) AS N'Tổng hóa đơn', SUM(dh.PHI_SP) AS N'Tổng thu nhập'
+	FROM DON_HANG dh
+		JOIN CHI_NHANH cn ON dh.MA_CN = cn.MA_CN
+	WHERE cn.MA_DT = @ma_dt;
+
+
+	SELECT dhsp.MA_SP AS N'Mã sản phẩm bán chạy nhất'
+	FROM DON_HANG_SP dhsp
+		JOIN DON_HANG dh ON dhsp.MA_DH = dh.MA_DH
+		JOIN CHI_NHANH_SP cnsp ON cnsp.MA_CN = dh.MA_CN
+		JOIN CHI_NHANH cn ON cn.MA_CN = cnsp.MA_CN
+	WHERE cn.MA_DT = @ma_dt
+	GROUP BY dhsp.MA_SP
+	HAVING SUM(dhsp.SO_LUONG_SP_DH) >= ALL (SELECT SUM(dhsp.SO_LUONG_SP_DH)
+											FROM DON_HANG_SP dhsp
+												JOIN DON_HANG dh ON dhsp.MA_DH = dh.MA_DH
+												JOIN CHI_NHANH_SP cnsp ON cnsp.MA_CN = dh.MA_CN
+												JOIN CHI_NHANH cn ON cn.MA_CN = cnsp.MA_CN
+											WHERE cn.MA_DT = @ma_dt
+											GROUP BY dhsp.MA_SP);
+	RETURN;
+END
+GO

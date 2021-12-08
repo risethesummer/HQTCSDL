@@ -10,9 +10,9 @@ using System.Windows.Forms;
 
 namespace HQTCSDL_Group01
 {
-    public partial class MainForm : Form
+    public partial class HQTCSDL : Form
     {
-        public MainForm()
+        public HQTCSDL()
         {
             InitializeComponent();
         }
