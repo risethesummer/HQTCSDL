@@ -216,3 +216,55 @@ BEGIN
 	RETURN;
 END
 GO
+
+--ERROR02 2 TÀI XẾ NHẬN ĐƠN HÀNG
+CREATE PROCEDURE tiep_nhan_dh_FIX @ma_tx CHAR(8), @ma_dh CHAR(8)
+AS
+BEGIN TRANSACTION
+	--Nếu đơn hàng đã có tài xế khác tiếp nhận
+	IF EXISTS (SELECT * 
+				FROM DON_HANG WITH UPDLOCK
+				WHERE MA_DH = @ma_dh AND MA_TX IS NOT NULL AND TINH_TRANG_DH = N'Đang xử lý')
+	BEGIN	
+		RETURN;
+	END
+
+	UPDATE DON_HANG
+	SET MA_TX = @ma_tx, TINH_TRANG_DH = N'Đang giao'
+	WHERE MA_DH = @ma_dh;
+
+COMMIT TRANSACTION
+GO
+
+--ERROR03 KHÁCH HÀNG HỦY ĐƠN CÙNG LÚC VỚI TÀI XẾ NHẬN ĐƠN HÀNG
+CREATE PROC huy_don_dat_hang_FIX @ma_dh CHAR(8)
+AS
+BEGIN TRANSACTION
+	BEGIN TRY
+	--Chỉ có thể hủy khi đơn hàng chưa được tiếp nhận bởi tài xế
+	IF EXISTS (SELECT * 
+				FROM DON_HANG WITH UPDLOCK
+				WHERE MA_DH = @ma_dh AND TINH_TRANG_DH = N'Đang xử lý')
+		BEGIN
+			UPDATE DON_HANG
+			SET TINH_TRANG_DH = N'Đã hủy'
+			WHERE MA_DH = @ma_dh;
+
+			--Cộng lại sản phẩm trong chi nhánh sản phẩm
+			UPDATE CHI_NHANH_SP
+			SET SO_LUONG_CNSP = SO_LUONG_CNSP + (SELECT TOP 1 dhsp.SO_LUONG_SP_DH
+												FROM DON_HANG_SP dhsp
+												WHERE dhsp.MA_SP = MA_SP AND dhsp.MA_DH = MA_DH)
+			WHERE MA_CN = (SELECT TOP 1 dh.MA_CN 
+							FROM DON_HANG dh
+							WHERE dh.MA_DH = @ma_dh)
+				AND MA_SP IN (SELECT dhsp.MA_SP 
+								FROM DON_HANG_SP dhsp
+								WHERE dhsp.MA_DH = @ma_dh);
+		END
+	END TRY
+	BEGIN CATCH
+		ROLLBACK TRANSACTION;
+	END CATCH
+COMMIT
+GO
