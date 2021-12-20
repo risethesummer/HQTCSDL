@@ -17,7 +17,7 @@ namespace HQTCSDL_Group01
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new HQTCSDL());
+            Application.Run(new SelectVersionForm());
         }
     }
 }
